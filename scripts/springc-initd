@@ -1,0 +1,188 @@
+#!/bin/bash
+# description: Manages lightweight java based processes where a app server container is not necessary
+# author: Adam Edwards
+#
+### BEGIN INIT INFO
+# Provides: springc
+# Required-Start: $remote_fs $syslog
+# Required-Stop:  $remote_fs $syslog
+# Default-Start: 3 4 5
+# Default-Stop: 0 1 2 6
+# chkconfig: 3 98 19
+# Short-Description: Spring containers
+# Description:    Spring Containers startup
+### END INIT INFO
+#Boot script for Spring Container
+# If there are multiple Containers in the same host, the containerName 
+#  should be specified in the command line.
+#
+# Usage: $CMD <action> [ContainerName]
+#
+# Change Log
+# 10-Sep-30 - Adam - Initial Version
+
+#
+#
+BASE=/u01/app/springc
+USER=javamgr
+SUPREFIX="su $USER -c "
+
+#
+# Subroutine to set the environment per container
+#
+f_setenv() {
+
+if [ -z $APP ];then
+    echo "APP is not set!"
+    return 2
+fi
+
+unset JAVA_HOME
+APP_BASE=$BASE/$APP
+APP_CONF=$APP_BASE/conf
+APP_LIB=$APP_BASE/lib
+APP_LOG=$APP_BASE/logs
+APP_LOGFILE=$APP_BASE/logs/springc-$APP.log
+CLASSPATH=$APP_LIB:$APP_CONF
+
+for file in `ls $APP_LIB/*.jar 2>/dev/null`
+do
+  if [ -z "$CLASSPATH" ];then
+    CLASSPATH=$file
+  else
+    CLASSPATH=$CLASSPATH:$file
+  fi
+done 
+export CLASSPATH
+
+export MAIN_CLASS=org.apache.camel.spring.Main
+export JAVA_HOME=/usr/java/latest
+
+if [ -f $APP_CONF/setenv.sh ];then
+ . $APP_CONF/setenv.sh
+fi
+
+}
+
+#
+# Start the container
+#
+startcontainer() {
+status
+if [ $? -eq 0 ];then
+ echo "springc[$APP] already running, nothing performed"
+ return 0
+fi
+
+echo "springc[$APP] starting container"
+$SUPREFIX "touch $APP_LOGFILE"
+echo "CLASSPATH=$CLASSPATH" >> $APP_LOGFILE
+
+if [ ! -d $APP_LOG ];then
+  $SUPREFIX "mkdir $APP_LOG"
+fi
+
+cd $APP_BASE
+echo "$JAVA_HOME/bin/java -Dspringc.app=$APP $JVM_ARGS $MAIN_CLASS $MAIN_ARGS" >>$APP_LOGFILE
+$SUPREFIX "$JAVA_HOME/bin/java -Dspringc.app=$APP $JVM_ARGS $MAIN_CLASS $MAIN_ARGS >>$APP_LOGFILE 2>&1 &"
+
+}
+
+stopcontainer() {
+
+pid=`pgrep -f springc.app=$APP`
+
+RUNNING=false
+if [ ! -z "$pid" ];then
+    echo "Found pid of: $pid"
+    $SUPREFIX "kill -HUP $pid"
+    RUNNING=true
+fi  
+
+x=0
+while [ "$RUNNING" = "true" ]
+do
+    x=$(( $x + 1 ))
+    pid=$(pgrep -u $USER -f "springc.app=$APP")
+
+    if [ "$x" -gt 25 ];then
+        echo "Taking too long to stop, killing process"
+        kill -9 $pid
+        RUNNING="false"
+    elif [ -n "$pid" ];then
+        mod=$(($x % 2))
+        if [ "$mod" -eq 0 ];then
+            echo "waiting for springc to stop"
+        fi
+        sleep 1
+    else
+        RUNNING="false"
+        echo "springc[$APP] Shutdown complete"
+    fi
+done
+
+}
+
+
+status() {
+pid=$(pgrep -u $USER -f "springc.app=$APP")
+if [ -n "$pid" ];then
+    echo "springc[$APP] is running pid=$pid"
+    return 0
+else
+    echo "springc[$APP] is not running"
+    return 1
+fi
+}
+
+
+###
+# Usage
+###
+if [ -z "$1" ];then
+  echo "Usage [start|stop|status] [app]"
+   echo " if app is blank, all apps"
+  exit 2
+fi
+
+if [ ! -z $2 ];then
+  APPS=$2
+else
+  APPS=`ls $BASE|grep -v common`
+fi
+
+rc=0
+for APP in $APPS
+do
+
+    f_setenv
+
+    case "$1" in
+    restart)
+            stopcontainer ${APP}
+            startcontainer ${APP}
+            ;;
+    start)
+            startcontainer ${APP}
+            ;;
+    stop)
+            stopcontainer ${APP}
+            ;;
+    status)
+        status ${APP}
+        ;;
+    *)
+            echo " usage!!"
+            exit 2
+            ;;
+    esac
+    rc=$(($?+$rc))
+done
+
+if [ "$rc" -gt 0 ];then
+    exit 1
+else
+    exit 0
+fi
+
+
